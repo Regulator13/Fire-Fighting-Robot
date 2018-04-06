@@ -105,7 +105,17 @@ V 3.2.2    3/18/18
    Improved Search_room function to return robot to previous position after searching for fire
    Improved Extinguish_flame function to approach proportional to the square root of the distance
 V 3.3.0    3/24/18
-   Added Sound_start functionwhich detects a 3.5-4.1 kHz signal and starts the robot
+   Added Sound_start function which detects a 3.5-4.1 kHz signal and starts the robot
+V 3.3.1    3/26/18
+   Added sound detect and fire detect LEDs and turned them on at their appropriate times
+V 3.3.2    3/28/18
+   Made substantial changes to Dog avoidance code to include all possible configurations and began testing them
+V 3.3.3    4/2/18
+   Changed turn and distance constants to be compatible with LiPo battery voltage and current
+   Added LED blink codes for debugging
+V 3.3.4    4/3/18
+   Improved quality of room search function especially candle approaching
+   Adjusted sound detect code to require a signal that is sufficiently loud as well as the right frequency
 """
 
 #----------------------------------------Assignments---------------------------------#
@@ -137,7 +147,7 @@ V 3.3.0    3/24/18
 
 #Line sensors
 #GPIO 4 - Left
-#GPIO 14 - Middle
+#ADC 7 - Middle
 #GPIO 15 - Right
 
 #Servo Motor
@@ -175,7 +185,6 @@ GPIO.setup(22, GPIO.OUT)    #Set GPIO 22 as output for left motor direction
 GPIO.setup(10, GPIO.OUT)    #Set GPIO 10 as output for right motor direction
 
 GPIO.setup(4, GPIO.IN,)     #Set GPIO 4 as the input for the line sensors
-GPIO.setup(14, GPIO.IN,)    #Set GPIO 14 as the input for the line sensors
 GPIO.setup(15, GPIO.IN,)    #Set GPIO 15 as the input for the line sensors
 
 GPIO.setup(23, GPIO.IN)     #Set GPIO 23 to input for encoders
@@ -225,8 +234,9 @@ TURNSPEED = 13.6  #Speed robot moves while turning
 SPEED = 35        #Speed robot moves while going forward (optimal at 35)
 
 #Delays
-TURN = .02        #Time delay the motors must run to turn 1 degree
-CONVCM = .2       #Convert the time delay to centimeters
+TURNLEFT = .0220  #Time delay the motors must run to turn 1 degree .0224 for zippy
+TURNRIGHT = .021  #Time delay the motors must run to turn 1 degree .021 for zippy
+CONVCM = .23      #Convert the time delay to centimeters
 PAUSE = .2        #Wait time between movements
 TRANS = .5        #Set the transition delay
 EXTINGUISH = 1    #Set the time the Versa Valve will be open
@@ -240,6 +250,7 @@ OBSTACLETOL = 5   #Tolerance in cm that the side sensors must differe from the c
 MAXSHORT = 25     #Tolerance for how far in cm short range distance sensor can pick up
 WALLDIST = 12     #Tolerance between robot and wall while wall folowing
 FRONTDIST = 12    #Tolerance between robot and obstacles in front
+LINEVALUE = 230   #Value to be considered a line vs a carpet
 
 #Dimensions
 WIDTH = 20        #Define the robot width in cm
@@ -303,6 +314,7 @@ def Sound_start():
             # Each data point is a signed 16 bit number, so we can normalize by dividing 32*1024
             normalized_data = audio_data / 32768.0
             intensity = abs(fft(normalized_data))[:int(NUM_SAMPLES/2)]
+            print ("Intensity: ",max(intensity))
             frequencies = linspace(0.0, float(SAMPLING_RATE)/2, num=NUM_SAMPLES/2)
             if frequencyoutput:
                 which = intensity[1:].argmax()+1
@@ -343,7 +355,7 @@ def Sound_start():
                             clearcount=0
                             print("Cleared alarm!")
                             alarm=False
-            if (thefreq < 3420 or thefreq > 4180):
+            if (thefreq < 3420 or thefreq > 4180 or (max(intensity) < 45)):
                 double_check = 0
             sleep(0.01)
         double_check += 1
@@ -366,8 +378,8 @@ def Move_forward_while_checking(delay, speed, line_detected): #Move forward for 
     GPIO.output(10,GPIO.LOW)   #Set right motor to forward
     pwm_left.start(speed)    #Start the left motor with a correction factor
     pwm_right.start(speed)
-    for x in range (0,delay*10):
-        time.sleep(.1*CONVCM)
+    for x in range (0,delay*20):
+        time.sleep(.05*CONVCM)
         sensor0 = Find_short_dist(0)
         sensor1 = Find_short_dist(1)
         line_detected = Check_line(line_detected)
@@ -420,6 +432,33 @@ def Move_forward_until_dist(distance, speed):  #Move robot forward until a dista
     pwm_right.stop()
     Stop(PAUSE)
     
+def Move_forward_until_dist_right(distance, speed):  #Move robot forward until a distance from a wall
+    sensor1 = Find_short_dist(1)
+    escape = False   #If the bot moves forward don't have it move backward
+    if (sensor1 > (distance)):
+        escape = True
+    while (sensor1 > (distance)):
+        GPIO.output(22,GPIO.HIGH)   #Set left motor to forward
+        GPIO.output(10,GPIO.LOW)   #Set right motor to forward
+        pwm_left.start(speed)
+        pwm_right.start(speed)
+        sensor1 = Find_short_dist(1)
+    if (escape):
+        pwm_left.stop()
+        pwm_right.stop()
+        Stop(PAUSE)
+        return None
+    sensor1 = Find_short_dist(1)
+    while (sensor1 < (distance)):
+        GPIO.output(22,GPIO.LOW)   #Set left motor to backward
+        GPIO.output(10,GPIO.HIGH)   #Set right motor to backward
+        pwm_left.start(speed)
+        pwm_right.start(speed)
+        sensor1 = Find_short_dist(1)
+    pwm_left.stop()
+    pwm_right.stop()
+    Stop(PAUSE)
+    
 def Transition_forward(delay, speed):
     GPIO.output(22,GPIO.HIGH)   #Set left motor to forward
     GPIO.output(10,GPIO.LOW)    #Set right motor to forward
@@ -454,7 +493,7 @@ def Turn_right(angle,speed): #Turn right a specified angle
     GPIO.output(10,GPIO.HIGH)   #Set right motor to forward
     pwm_left.start(speed)
     pwm_right.start(speed)
-    time.sleep(angle*TURN)
+    time.sleep(angle*TURNRIGHT)
     Stop(PAUSE)
 
 def Turn_left(angle,speed): #Turn left a specified angle 
@@ -462,7 +501,7 @@ def Turn_left(angle,speed): #Turn left a specified angle
     GPIO.output(10,GPIO.LOW)    #Set right motor to backward   
     pwm_right.start(speed)
     pwm_left.start(speed)
-    time.sleep(angle*TURN)
+    time.sleep(angle*TURNLEFT)
     Stop(PAUSE)
 
 def Turn_until_aligned():
@@ -477,25 +516,33 @@ def Turn_until_aligned():
         sensor0 = Find_short_dist(0)        #Check front sensor values to see if they are aligned
         sensor1 = Find_short_dist(1)
     Stop(PAUSE)
-
+    
 def Align_on_line():
     x = 0
+    while (GPIO.input(4) and GPIO.input(15)):
+        GPIO.output(22,GPIO.LOW)    #Set left motor to backward
+        GPIO.output(10,GPIO.HIGH)    #Set right motor to backward
+        pwm_left.start(SPEED/4)
+        pwm_right.start(SPEED/4)
+        time.sleep(.1)
     if ((not GPIO.input(4)) and GPIO.input(15)):   #If the left line sensor is over a line and the right is not
-        while(GPIO.input(15) and x<10000):     #While the right line sensor is not on a line
+        while(GPIO.input(15) or x<3000):     #While the right line sensor is not on a line
             GPIO.output(10,GPIO.LOW)   #Set right motor to forward
+            GPIO.output(22,GPIO.LOW)   #Set left motor to backward
             pwm_right.start(SPEED/4)   #Turn on the right motor
+            pwm_left.start(SPEED/4)    #Turn on the left motor
             x += 1     #Increment a counter to prevent overshoot errors
         Stop(PAUSE)     #Stop the motors
-    if (GPIO.input(4) and (not GPIO.input(15))):   #If the right line sensor is over a line and the left is not
-        while(GPIO.input(4) and x < 10000):      #While the left line sensor is not on a line
+        return
+    elif (GPIO.input(4) and (not GPIO.input(15))):   #If the right line sensor is over a line and the left is not
+        while(GPIO.input(4) or x < 3000):      #While the left line sensor is not on a line
             GPIO.output(22,GPIO.HIGH)   #Set left motor to forward
+            GPIO.output(10,GPIO.HIGH)   #Set right motor to backward
             pwm_left.start(SPEED/4)     #Turn on the left motor
+            pwm_right.start(SPEED/4)    #Turn on the right motor
             x += 1     #Increment a counter to prevent overshoot errors
         Stop(PAUSE)     #Stop the motors
-    if (GPIO.input(4) and GPIO.input(15)):    #If neither sensor is above a line, assume it was overshot while turning
-        while(GPIO.input(14) and x < 10):     #While the middle sensor doesn't see a line
-            Transition_backward(.1,SPEED/2)   #Go backwards at 1/4th speed
-            x += 1     #Increment a counter to prevent overshoot errors
+        return
 
 def Right_wall_follow_until_door(inside_room, hall, dog_config):
     line_detected = False #Set this true when the line is detected
@@ -518,10 +565,10 @@ def Right_wall_follow_until_door(inside_room, hall, dog_config):
         differential = D*(sensor_left - sensor_left_old)/T
         adjust_left = (proportional + differential)
         #Set the adjustment to be inside the duty cycle range
-        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) <= 0):
-            adjust_left = 0
-        if ((SPEED + adjust_left) >= 100 or (SPEED - adjust_left) >=100):
-            adjust_left = 50
+        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) >= 100):
+            adjust_left = (SPEED-9)
+        if ((SPEED - adjust_left) >= 100 or (SPEED + adjust_left) <= 0):
+            adjust_left = -(SPEED-9)
         #Change the motor speeds according to the adjustment
         pwm_left.start(SPEED + adjust_left)
         pwm_right.start(SPEED - adjust_left)
@@ -530,7 +577,7 @@ def Right_wall_follow_until_door(inside_room, hall, dog_config):
         #Check to see if the front sensor has dropped out of range, if so, turn right
         if (sensor_left > MAXSHORT):
             Transition_forward(TRANS, SPEED)
-            for x in range (0,SPEED*14):
+            for x in range (0,SPEED*10):
                 Transition_forward(.01,SPEED*2)
                 line_detected = Check_line(line_detected)
                 if (line_detected):
@@ -538,10 +585,22 @@ def Right_wall_follow_until_door(inside_room, hall, dog_config):
                     return line_detected, dog_config
             Stop(PAUSE)
             sensor2 = Find_short_dist(2)
-            if (sensor2 > 20):
+            if (sensor2 > MAXSHORT):
+                Turn_right(100,TURNSPEED)
+                Transition_forward(TRANS, SPEED)
+                for x in range (0,SPEED*10):
+                    Transition_forward(.01,SPEED*2)
+                    line_detected = Check_line(line_detected)
+                    if (line_detected):
+                        Stop(PAUSE)
+                        return line_detected, dog_config
+                Stop(PAUSE)
+            sensor2 = Find_short_dist(2)
+            if (sensor2 > MAXSHORT):
+                Move_forward(3,SPEED)
                 Turn_right(95,TURNSPEED)
                 Transition_forward(TRANS, SPEED)
-                for x in range (0,SPEED*14):
+                for x in range (0,SPEED*10):
                     Transition_forward(.01,SPEED*2)
                     line_detected = Check_line(line_detected)
                     if (line_detected):
@@ -550,12 +609,20 @@ def Right_wall_follow_until_door(inside_room, hall, dog_config):
                 Stop(PAUSE)
             sensor_left_old = Find_short_dist(2)
         #Check to the middle sensor for a wall
-        sensor3 = Find_short_dist(3)   #Get middle front sensor value
-        if (sensor3 < (WALLDIST + .5)):      #See if a wall or obstacle has been spotted in front of robot
+        sensor3 = 0
+        for x in range(0,5):
+            sensor3 += Find_short_dist(3)
+            line_detected = Check_line(line_detected)
+            if (line_detected):   #Check for a line while checking sensors
+                Stop(PAUSE)
+                return line_detected, dog_config
+        sensor_front = sensor3/5.0
+        if (sensor_front < (WALLDIST + .5)):      #See if a wall or obstacle has been spotted in front of robot
             obstacle = False
             if (hall == 3 or hall == 4 or room == 4):
                 Move_backward(3,SPEED)
                 obstacle = Scan_for_obstacle()
+                sensor3 = Find_short_dist(3)
             if (inside_room and obstacle):
                 Move_around_obstacle()
             if ((not inside_room) and obstacle):
@@ -579,9 +646,10 @@ def Right_wall_follow_until_door(inside_room, hall, dog_config):
         #Check to see if a line is detected
         line_detected = Check_line(line_detected)
     for x in range (0, dog_config):
-        GPIO.output(13, GPIO.HIGH) #Turn on Sound detect LED
-        time.sleep(1)
-        GPIO.output(13, GPIO.LOW) #Turn off Sound detect LED
+        GPIO.output(6, GPIO.HIGH) #Turn on Sound detect LED
+        time.sleep(.5)
+        GPIO.output(6, GPIO.LOW) #Turn off Sound detect LED
+        time.sleep(.5)
     Stop(PAUSE)
     return line_detected, dog_config
 
@@ -602,25 +670,34 @@ def Right_wall_follow_until_turn(inside_room, hall, dog_config):
         differential = D*(sensor_left - sensor_left_old)/T
         adjust_left = (proportional + differential)
         #Set the adjustment to be inside the duty cycle range
-        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) <= 0):
-            adjust_left = 0
-        if ((SPEED + adjust_left) >= 100 or (SPEED - adjust_left) >=100):
-            adjust_left = 50
+        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) >= 100):
+            adjust_left = (SPEED-9)
+        if ((SPEED - adjust_left) >= 100 or (SPEED + adjust_left) <= 0):
+            adjust_left = -(SPEED-9)
         #Change the motor speeds according to the adjustment
         pwm_left.start(SPEED + adjust_left)
         pwm_right.start(SPEED - adjust_left)
         #Set the sensor_old to the current sensor values
         sensor_left_old = sensor_left
         #Check to the middle sensor for a wall
-        sensor3 = Find_short_dist(3)   #Get middle front sensor value
-        if (sensor3 < (WALLDIST + .5)):      #See if a wall or obstacle has been spotted in front of robot
+        sensor3 = 0
+        for x in range(0,5):
+            sensor3 += Find_short_dist(3)
+            line_detected = Check_line(line_detected)
+            if (line_detected):   #Check for a line while checking sensors
+                Stop(PAUSE)
+                return line_detected, dog_config
+        sensor_front = sensor3/5.0
+        if (sensor_front < (WALLDIST + .5)):      #See if a wall or obstacle has been spotted in front of robot
             obstacle = False
             if (hall == 3 or hall == 4 or room == 4):
                 Move_backward(3,SPEED)
-                obstacle = Scan_for_obstacle()               
+                obstacle = Scan_for_obstacle()
+                sensor3 = Find_short_dist(3)
             if (inside_room and obstacle):
                 Move_around_obstacle()
             if ((not inside_room) and obstacle):
+                Move_forward(2,SPEED)
                 if (hall == 3):
                     dog_config = 1
                     break
@@ -639,9 +716,10 @@ def Right_wall_follow_until_turn(inside_room, hall, dog_config):
         #Check to see if a line is detected
         line_detected = Check_line(line_detected)
     for x in range (0, dog_config):
-        GPIO.output(13, GPIO.HIGH) #Turn on Sound detect LED
-        time.sleep(1)
-        GPIO.output(13, GPIO.LOW) #Turn off Sound detect LED
+        GPIO.output(6, GPIO.HIGH) #Turn on Sound detect LED
+        time.sleep(.5)
+        GPIO.output(6, GPIO.LOW) #Turn off Sound detect LED
+        time.sleep(.5)
     Stop(PAUSE)
     return line_detected, dog_config
 
@@ -662,10 +740,10 @@ def Right_wall_follow_for_distance(distance):
         differential = D*(sensor_left - sensor_left_old)/T
         adjust_left = (proportional + differential)
         #Set the adjustment to be inside the duty cycle range
-        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) <= 0):
-            adjust_left = 0
-        if ((SPEED + adjust_left) >= 100 or (SPEED - adjust_left) >=100):
-            adjust_left = 50
+        if ((SPEED - adjust_left) <= 0 or (SPEED + adjust_left) >= 100):
+            adjust_left = (SPEED-9)
+        if ((SPEED - adjust_left) >= 100 or (SPEED + adjust_left) <= 0):
+            adjust_left = -(SPEED-9)
         #Change the motor speeds according to the adjustment
         pwm_left.start(SPEED + adjust_left)
         pwm_right.start(SPEED - adjust_left)
@@ -696,8 +774,13 @@ def Enter_and_exit_room():
 
 #-------------------------------------Sensor Functions---------------------------------#
 def Check_line(line_detected):
-    if ((not GPIO.input(4)) or (not GPIO.input(14)) or (not GPIO.input(15))):
+    sensor7 = mcp.read_adc(7)     #Get the value of the middle line sensors
+    if (sensor7 < LINEVALUE):
             line_detected = True
+            Stop(PAUSE)
+            GPIO.output(13, GPIO.HIGH) #Turn on Sound detect LED
+            time.sleep(.5)
+            GPIO.output(13, GPIO.LOW) #Turn off Sound detect LED
     return line_detected
 
 def Find_short_dist(sensor):
@@ -716,7 +799,7 @@ def Find_long_dist(sensor):
     if (voltage == 0):
         print ("Sensor out of range")
         voltage = .1
-    distance = (60/voltage)
+    distance = (60.0/voltage)
     return distance
 
 def Scan_for_obstacle():   #Return True if the sensor is seeing an obstacle, False for a wall
@@ -726,7 +809,8 @@ def Scan_for_obstacle():   #Return True if the sensor is seeing an obstacle, Fal
     Turn_left(20,TURNSPEED)
     sensor0 = Find_short_dist(0)
     Turn_right(10,TURNSPEED)
-    if ((sensor1 > (sensor3 + OBSTACLETOL)) or (sensor0 > (sensor3 + OBSTACLETOL))):
+    if ((sensor1 > (sensor3 + OBSTACLETOL)) or (sensor0 > (sensor3 + OBSTACLETOL))
+        or (sensor1 < (sesnor3 - OBSTACLETOL)) or (sensor0 < (sensor3 - OBSTACLETOL))):
         print("Obstacle found")
         return True
     else:
@@ -757,7 +841,7 @@ def Measure_room():
     length = (sensor5_avg + LENGTH + 3)       #Add 2 cm for line sensors sticking in front of robot
     area = (width)*(length)
     line_detected = False
-    Move_forward_while_checking(5, SPEED/2, line_detected)
+    Move_forward_while_checking(10, SPEED/2, line_detected)
     ###TEST
     print("Width: ", width)
     print("Length: ", length)
@@ -772,13 +856,13 @@ def Determine_room(width, length, area):
     if (area < 4917):
         room = 4
         return room
-    if (area >= 4917 and area < 8000 and width < 85):
+    if (area >= 4917 and area < 9500 and width < 85):
         room = 1
         return room
-    if (area >= 4917 and area < 8000 and width >= 85):
+    if (area >= 4917 and area < 9500 and width >= 85):
         room = 2
         return room
-    if (area >= 8000):
+    if (area >= 9500):
         room = 3
         return room
     print ("Error with long distance sensors")
@@ -796,16 +880,20 @@ def Determine_entrance(room):
     if (room == 3 and sensor2 < MAXSHORT and sensor4 >= (110 - (WIDTH + WALLDIST))):
         entrance = 3  #room 3 top entrance
     if (room == 4):
-        Move_forward_until_dist(WALLDIST,SPEED/2) #Make sure the robot is still WALLDIST away
+        Move_forward_until_dist(WALLDIST+4,SPEED) #Make sure the robot is still WALLDIST away
         Turn_until_aligned()                    #Turn until aligned with the wall
-        Move_forward_until_dist(WALLDIST,SPEED/2) #Make sure the robot is still WALLDIST away
-        Turn_left(90,TURNSPEED)
-        sensor5 = Find_long_dist(5)
-        if (sensor5 < 70):
+        Move_forward_until_dist(WALLDIST+4,SPEED) #Make sure the robot is still WALLDIST away
+        Turn_left(85,TURNSPEED)
+        sensor5 = 0
+        for x in range(0,10):
+            sensor5 += Find_long_dist(5)
+        sensor_back = sensor5/10.0
+        if (sensor_back < 70):
             entrance = 5   #room 4 top entrance            
             GPIO.output(6, GPIO.HIGH) #Turn on Sound detect LED
-            time.sleep(1)
+            time.sleep(.5)
             GPIO.output(6, GPIO.LOW) #Turn off Sound detect LED
+            time.sleep(.5)
         else:
             entrance = 4   #room 4 bottom entrance
     return entrance
@@ -857,7 +945,7 @@ def Detect_flame():
     fire_check = 0
     for x in range(0,10000):
         fire_check += GPIO.input(12)
-    if (fire_check < 9990):
+    if (fire_check < 10000):
         print ("Fire Detected")
         fire_detected = True
     else:
@@ -880,17 +968,17 @@ def Extinguish_flame(fire_detected):
             GPIO.output(16, GPIO.LOW) #Close the CO2 canister
             GPIO.output(6, GPIO.LOW) #Turn off Fire detect LED
         else:
-            if(location > 12):
-                Turn_left(((location-1)-12)*9,TURNSPEED)
-                return_angle += ((location-1)-12)*9
-                print ("Angle: ", ((location-1)-12)*9)
-            if(location < 12):
-                Turn_right((12-(location-1))*9,TURNSPEED)
-                return_angle -= (12-(location-1))*9
-                print ("Angle: ", ((location-1)-12)*9)
+            if(location > 14):
+                Turn_left(((location)-14)*9,TURNSPEED)
+                return_angle += ((location)-14)*9
+                print ("Angle: ", ((location)-14)*9)
+            if(location < 14):
+                Turn_right((14-(location))*9,TURNSPEED)
+                return_angle -= (14-(location))*9
+                print ("Angle: ", ((location)-14)*9)
             Transition_forward(TRANS,SPEED)
             forward = (((sensor6-700)/10)**2)/150
-            if (sensor6 < 900 and (location > 16 or location < 8)):
+            if (sensor6 < 900 and (location > 18 or location < 8)):
                 forward = forward/3      #If the sensor is close to the fire but still angled wrong, advance slowly
             print("forward:", forward)
             Move_forward(forward,SPEED)
@@ -940,7 +1028,7 @@ def Search_room(room, fire_extinguished, inside_room, hall, dog_config):
     if (sensor2 < WALLDIST + 6):
         Turn_right(90,TURNSPEED)
         Turn_until_aligned()
-        Turn_left(155,TURNSPEED)
+        Turn_left(170,TURNSPEED)
         fire_detected = Detect_flame()       #Use UV Tron to check for a fire
         if (fire_detected):                  #If a fire was spotted
             return_dist, return_angle = Extinguish_flame(fire_detected)  #Extinguish the fire
@@ -965,18 +1053,19 @@ def Search_room(room, fire_extinguished, inside_room, hall, dog_config):
             if(return_angle >= 0):
                 Turn_right(return_angle,TURNSPEED)
         Turn_left(180,TURNSPEED)
-    Move_forward_until_dist(WALLDIST,SPEED/2)
+    Move_forward_until_dist(WALLDIST,SPEED)
     Turn_until_aligned()
-    Move_forward_until_dist(WALLDIST,SPEED/2)
+    Move_forward_until_dist(WALLDIST,SPEED)
     Turn_left(90,TURNSPEED)
     line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)
     if (line_detected):
         Align_on_line()
+    if (fire_extinguished):
+        GPIO.output(13, GPIO.HIGH) #Turn on Sound detect LED
+        time.sleep(1.5)
+        GPIO.output(13, GPIO.LOW) #Turn off Sound detect LED
+        time.sleep(.5)
     return fire_extinguished
-    ###
-    #Code for searching for candle and extinguishing it
-    #return fire_extinguished
-    ###
 
 #------------------------------------High Level Functions-----------------------------#
             
@@ -1041,6 +1130,8 @@ while (start):
         if (room_not_found > 7):                #If a wall is still not found after checking all 8 directions
             Transition_forward(TRANS,SPEED)
             line_detected = Move_forward_while_checking(10,SPEED,line_detected)  #Move forward looking for a line or wall
+            if (sensor0 < MAXSHORT or sensor1 < MAXSHORT):
+                Turn_until_aligned()
             sensor0 = Find_short_dist(0)   #Get right front sensor
             sensor1 = Find_short_dist(1)   #Get left front sensor
             if(line_detected):                  #If a line was detected
@@ -1055,8 +1146,18 @@ while (start):
                 room3_config, room4_config, dog_config = Set_config(room3_config, room4_config, dog_config, entrance)  #Set the configuration
                 room_checked[room - 1] = True   #Mark off this room as checked for the candle
             room_not_found = 2                  #Reset the robot to do 270 next check
-            
+    for x in range (0,starting_room):
+        GPIO.output(6, GPIO.HIGH) #Turn on Sound detect LED
+        time.sleep(.25)
+        GPIO.output(6, GPIO.LOW) #Turn off Sound detect LED
+        time.sleep(.25)
+    if (entrance == 3):
+        GPIO.output(13, GPIO.HIGH) #Turn on Sound detect LED
+        time.sleep(.5)
+        GPIO.output(13, GPIO.LOW) #Turn off Sound detect LED
     position = Determine_position(room, hall, room3_config, room4_config, dog_config, entrance)   #Determine where in the maze the bot is
+    if(not(room == 4)):
+        Align_on_line()            #Align to the line
     while (not fire_extinguished or not (room == starting_room)):
         print("Position is: ", position)
         print("Hall is: ", hall)
@@ -1068,11 +1169,16 @@ while (start):
                 line_detected = False           #Reset the line sensors
             inside_room = True                  #Tell the bot it's outside the room
             room = 2                            #Set which room bot is in
-            Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+            fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
             room_checked[room - 1] = True       #Mark off this room as checked for the candle
             inside_room = False                 #Mark the bot is back in the hall
             hall = 2                            #Set the hall to be 2
             position = 2                        #Set the new position
+        if(fire_extinguished and room == starting_room):
+            #Reverse and stop in starting room   
+            Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
+            Move_backward(3,SPEED)
+            Stop(1000)
         if (position == 2):  #If exiting room 2
             Transition_forward(TRANS*3, SPEED)  #Transition forward far enough to go off line
             line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
@@ -1081,7 +1187,7 @@ while (start):
                 line_detected = False           #Reset the line sensors
             inside_room = True                  #Tell the bot it's outside the room
             room = 3                            #Set which room bot is in
-            Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+            fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
             room_checked[room - 1] = True           #Mark off this room as checked for the candle
             inside_room = False                 #Mark the bot is back in the hall
             hall = 3                            #Set the hall to 3
@@ -1091,10 +1197,13 @@ while (start):
             else:                               #Otherwise
                 entrance = 1                    #Set the entrance to be the lower left entance
             position = 3                        #Set the new position
+        if(fire_extinguished and room == starting_room):
+            #Reverse and stop in starting room   
+            Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
+            Move_backward(3,SPEED)
+            Stop(1000)
         if (position == 3):  #If exiting room 3 on the left side
             Transition_forward(TRANS*3, SPEED)  #Transition forward far enough to go off line
-            if (entrance == 1):                 #If the robot is at the bottom entrance of room 3
-                Move_forward(3, SPEED/2)        #Move forward some to account for earlier right wall drop off 
             line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
             if (line_detected):                 #If there is no dog in hall 3, and robot goes to entrance 3
                 Align_on_line()                 #Align on the line
@@ -1107,10 +1216,12 @@ while (start):
                 hall = 4                        #Set the hall to 4
                 position = 4                    #Set the new position
             else:                               #If there is a dog in hall 3
+                Move_backward(2, SPEED/2)       #Backup to avoid running into the wall
                 Turn_left(90, TURNSPEED)        #Turn left 90 degrees
                 line_detected = Move_forward_while_checking(20,SPEED,line_detected)   #Go forward to look for room 4
                 if (not line_detected):         #If lower entrance of room 4 isn't found
                     hall = 8                    #Set the hall to 8
+                    Move_forward_until_dist_right(WALLDIST, SPEED) #Move to the wall of hall 4
                     Turn_left(90, TURNSPEED)    #Turn left to align with room 4 bottom wall
                     line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
                     if(line_detected):                  #If a line was detected
@@ -1118,7 +1229,7 @@ while (start):
                         line_detected = False           #Reset the line sensors
                         inside_room = True                  #Tell the bot it's outside the room
                         room = 4                            #Set which room bot is in
-                        Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                        fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                         room_checked[room - 1] = True       #Mark off this room as checked for the candle
                         inside_room = False                 #Mark the bot is back in the hall
                         hall = 9                            #Set the hall to 9
@@ -1129,26 +1240,31 @@ while (start):
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 4                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     hall = 6                            #Set the hall to 6
                     entrance = 4                        #Set the entrance to be the lower entrance of room 4
                     position = 6                        #Set the new position
+        if(fire_extinguished and room == starting_room):
+            #Reverse and stop in starting room   
+            Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
+            Move_backward(3,SPEED)
+            Stop(1000)
         if (position == 4):                     #If the robot is at the top entrance of room 3
             Transition_forward(TRANS*3, SPEED)  #Transition forward far enough to go off line
             line_detected, dog_config = Right_wall_follow_until_turn(inside_room, hall, dog_config)  #Follow until the top wall
             if (dog_config == 2):               #If there is a dog in hall 4
                 Turn_left(90,TURNSPEED)         #Turn left 90 degrees
-                Move_forward_while_checking(3,SPEED,line_detected)  #Move forward looking for a wall
-                Turn_left(90,TURNSPEED)         #Turn left 90 degrees
-                line_detected, dog_config = Right_wall_follow_until_turn(inside_room, hall, dog_config)  #Follow until the top wall
+                Move_forward_until_dist_right(WALLDIST,SPEED/2) #Make sure the robot is still WALLDIST away
+                Turn_left(80,TURNSPEED)         #Turn left 90 degrees
+                line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the top wall
                 if (line_detected):                     #If the top entrance to room 4 was found
                     Align_on_line()                     #Align on the line
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 4                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     entrance = Determine_entrance(room)
@@ -1159,31 +1275,42 @@ while (start):
                     position = 5
                     outside_room4 = True
             else:
-                Right_wall_follow_for_distance(60)  #Follow the right wall for 60 cm
+                Right_wall_follow_for_distance(80)  #Follow the right wall for 80 cm
                 Turn_left(90,TURNSPEED)             #Turn right 90 degrees
-                line_detected = Move_forward_while_checking(10,SPEED,line_detected)  #Move forward looking for a line or wall
+                line_detected = Move_forward_while_checking(15,SPEED,line_detected)  #Move forward looking for a line or wall
                 if (line_detected):                     #If the top entrance to room 4 was found
                     Align_on_line()                     #Align on the line
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 4                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     hall = 7                            #Set the hall to 7
                     entrance = 5                        #Set the entrance to be the upper entrance of room 4
                     position = 5                        #Set the new position
                 else:                                   #If room 4 entrance is on bottom
+                    Move_forward_until_dist(WALLDIST,SPEED/2) #Make sure the robot is still WALLDIST away
                     Turn_left(90,TURNSPEED)             #Turn left 90 degrees
                     hall = 7                            #Set the hall to 7
                     position = 5                        #Set the new position
+        if(fire_extinguished and room == starting_room):
+            #Reverse and stop in starting room   
+            Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
+            Move_backward(3,SPEED)
+            Stop(1000)
         if (position == 5):                     #If the robot is at the top entrance of room 4
             if (room_checked[3] and (not dog_config == 3)):     #If the robot began in room 4 and there isn't a dog in the top hall
+                if(starting_room == 4 or outside_room4):    #If robot started in room 4 realign to top wall
+                    Turn_right(90,TURNSPEED)
+                    Move_forward_until_dist(WALLDIST,SPEED) #Make sure the robot is still WALLDIST away
+                    Turn_until_aligned()
+                    Turn_left(90,TURNSPEED)
                 Transition_forward(TRANS*3, SPEED)      #Move off the line
-                if(not(starting_room == 4 or outside_room4)):  
+                if(not(starting_room == 4 or outside_room4)):  #Move to the top wall
                     Move_forward_while_checking(30,SPEED,line_detected)  #Move forward looking for a wall
                     Turn_until_aligned()                    #Turn until aligned with the wall
-                    Move_forward_until_dist(WALLDIST,SPEED/2) #Make sure the robot is still WALLDIST away
+                    Move_forward_until_dist(WALLDIST,SPEED) #Make sure the robot is still WALLDIST away
                     Turn_left(90,TURNSPEED)                 #Turn left 90 degrees
                 line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
                 if (line_detected):                     #If the top entrance to room 4 was found
@@ -1191,28 +1318,28 @@ while (start):
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 1                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     hall = 1                            #Set the hall to 1
                     position = 1                        #Set the new position
-                else:
+                else:                                   #If there is a dog in config 3 return to room 4
                     Turn_left(90,TURNSPEED)             #Turn left to face room 4 again
                     Move_forward_while_checking(200,SPEED,line_detected)  
                     line_detected = Move_forward_while_checking(10,SPEED,line_detected)  #Move forward looking for a wall or lione
                     if (line_detected):                     #If the top entrance to room 4 was found
                         Align_on_line()                     #Align on the line
                         line_detected = False               #Reset the line sensors
-                        Search_room(room, fire_extinguished, inside_room, hall, dog_config)
+                        fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)
                         position = 5
                         dog_config = 3
                     else:
                         Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until door
                         Align_on_line()                     #Align on the line
-                        Search_room(room, fire_extinguished, inside_room, hall, dog_config)
+                        fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)
                         position = 5
                         dog_config = 3
-            else:
+            else:                                       #If there is a dog in config 3
                 Transition_forward(TRANS*3, SPEED)      #Transition forward far enough to go off line
                 if(starting_room == 4 and (not dog_config == 3)):                 #If robot started in room 4
                     Turn_right(90,TURNSPEED)            #Turn right to avoid driving into top wall
@@ -1222,7 +1349,7 @@ while (start):
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 4                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     hall = 6                            #Set the hall to 6
@@ -1230,38 +1357,47 @@ while (start):
                     position = 6                        #Set the new position
                 else:
                     Turn_left(180,TURNSPEED)            #Do a 180
-                    Move_forward_while_checking(20,SPEED,line_detected)   #Move to right outer wall
+                    Move_forward_until_dist(WALLDIST,SPEED)   #Make sure the robot is still WALLDIST away
+                    Turn_until_aligned()
                     Turn_left(90,TURNSPEED)
                     line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
                     Align_on_line()                     #Align on the line
                     line_detected = False               #Reset the line sensors
                     inside_room = True                  #Tell the bot it's outside the room
                     room = 1                            #Set which room bot is in
-                    Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                    fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                     room_checked[room - 1] = True       #Mark off this room as checked for the candle
                     inside_room = False                 #Mark the bot is back in the hall
                     hall = 1                            #Set the hall to 1
                     position = 1                        #Set the new position
-        if (position == 6):                             #If the robot is at the bottom of room 4
+        if(fire_extinguished and room == starting_room):
+            #Reverse and stop in starting room   
+            Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
+            Move_backward(3,SPEED)
+            Stop(1000)
+        if (position == 6):                             #If the robot is at the bottom of room 4      
             if(starting_room == 4 or outside_room4):
-                Turn_right(190,TURNSPEED)
+                Turn_right(90,TURNSPEED)
+                Move_forward_until_dist(WALLDIST,SPEED/2)   #Make sure the robot is still WALLDIST away
+                Turn_until_aligned()
+                Turn_right(110,TURNSPEED)
             else:
                 Transition_forward(TRANS,SPEED)
                 Move_forward_while_checking(30,SPEED,line_detected)  #Move forward looking for a wall
                 Move_forward_until_dist(WALLDIST,SPEED/2)   #Make sure the robot is still WALLDIST away
                 Turn_until_aligned()                        #Turn until aligned with the wall
                 Move_forward_until_dist(WALLDIST,SPEED/2)   #Make sure the robot is still WALLDIST away
-                Turn_right(100,TURNSPEED)                   #Turn right 100 degrees to face the center of the intersection
+                Turn_right(110,TURNSPEED)                   #Turn right 100 degrees to face the center of the intersection
             Transition_forward(TRANS,SPEED)             #Transition forward slowly
-            Move_forward(12,SPEED)                      #Move forward 12 cm
+            Move_forward(10.5,SPEED)                      #Move forward 11 cm
             Turn_right(95,TURNSPEED)                    #Turn down hallway 8
             Transition_forward(TRANS,SPEED)             #Transition forward slowly
             Move_forward(6,SPEED)                       #Move forward to make sure the right wall of room 4 is there
-            Right_wall_follow_for_distance(30)          #Follow up this wall for 30 cm
+            Right_wall_follow_for_distance(40)          #Follow up this wall for 30 cm
             Turn_left(90,TURNSPEED)                     #Turn left to face room 1
-            Move_forward_until_dist(WALLDIST,SPEED/2)   #Make sure the robot is still WALLDIST away
+            Move_forward_until_dist(WALLDIST,SPEED)   #Make sure the robot is still WALLDIST away
             Turn_until_aligned()                        #Turn until aligned with the wall
-            Move_forward_until_dist(WALLDIST,SPEED/2)   #Make sure the robot is still WALLDIST away
+            Move_forward_until_dist(WALLDIST,SPEED)   #Make sure the robot is still WALLDIST away
             Turn_left(90,TURNSPEED)                     #Turn left to put the wall on the right side of the robot
             line_detected, dog_config = Right_wall_follow_until_door(inside_room, hall, dog_config)  #Follow until the next room
             if (line_detected):                     #If the  entrance to room 1 was found
@@ -1269,7 +1405,7 @@ while (start):
                 line_detected = False               #Reset the line sensors
                 inside_room = True                  #Tell the bot it's outside the room
                 room = 1                            #Set which room bot is in
-                Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
+                fire_extinguished = Search_room(room, fire_extinguished, inside_room, hall, dog_config)     #Search the room the bot is in
                 room_checked[room - 1] = True       #Mark off this room as checked for the candle
                 inside_room = False                 #Mark the bot is back in the hall
                 hall = 1                            #Set the hall to 1
@@ -1281,9 +1417,6 @@ while (start):
             inside_room = False                   #Mark bot is outside of a room
             hall = Determine_hall(room, entrance) #Decide which hall section the robot is in
             Determine_position(room, hall, room3_config, room4_config, entrance)   #Determine where in the maze the bot is
-    
-    Transition_backward(TRANS,SPEED)  #Once returned to starting room, back into room a little
-    Move_backward(3,SPEED)
 
 #-----------------------------------------Test Loop-----------------------------------#
 
@@ -1301,10 +1434,14 @@ if (test == 0):
         sensor3 = Find_short_dist(3)
         sensor4 = Find_long_dist(4)
         sensor5 = Find_long_dist(5)
+        sensor7 = mcp.read_adc(7)
+        print ("Left line: ",GPIO.input(4))
+        print ("Right line: ",GPIO.input(15))
         print (int(sensor0), int(sensor1), int(sensor2), int(sensor3), int(sensor4), int(sensor5))
         print("Value is:", sensor_value)
         print("Front Left is:", int(sensor0), "cm")
         print("Front Right is:",int(sensor1), "cm")
+        print("Line is: ",sensor7)
         time.sleep(2)
 
 #Test for basic movement
@@ -1372,7 +1509,13 @@ if (test == 5):
     Move_forward(60,SPEED)
     
 if (test == 6):
-    Turn_until_aligned()
+    print(GPIO.input(4))
+    print(GPIO.input(15))
+    Align_on_line()
+    print("Aligned")
+    GPIO.output(6, GPIO.HIGH)
+    time.sleep(1)
+    GPIO.output(6, GPIO.LOW)
 
 if (test == 7):
     width,length,area = Measure_room()
